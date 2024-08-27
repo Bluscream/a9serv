@@ -170,6 +170,41 @@ int sendCMD(myval *val)
 	return sendEnc(&pkt);
 }
 
+#define EXEC_ENDPOINT "/exec"
+void sendExecCmd(const char* json_str) {
+	// Create a myval structure
+	myval cmd_val;
+
+	// Calculate the size needed
+	size_t json_len = strlen(json_str);
+	cmd_val.mv_size = json_len + 1; // +1 for null terminator
+
+	// Allocate memory for the data
+	cmd_val.mv_data = malloc(cmd_val.mv_size);
+
+	// Copy the JSON string into the allocated memory
+	strcpy((char*)cmd_val.mv_data, json_str);
+
+	// Call sendCmd()
+	int len = sendCMD(&cmd_val);
+	if (len != cmd_val.mv_size) {
+		perror("Failed to send command");
+		free(cmd_val.mv_data);
+		return;
+	}
+
+	// Free the allocated memory
+	free(cmd_val.mv_data);
+
+	// Process the response (you might want to add this logic here)
+	// For example:
+	// myval resp = {sizeof(sendbuf), sendbuf};
+	// decode(&resp);
+	// // Handle the response...
+
+	printf("Command sent successfully\n");
+}
+
 int connect_camera()
 {
 	int i;
@@ -462,6 +497,8 @@ static const char http200b[] =
 
 int startup()
 {
+    int client_fd, portno = 3000;
+    struct sockaddr_in server_addr;
 	struct timeval tv;
 	struct sockaddr clientip;
 	struct sockaddr_in *iclientip = (struct sockaddr_in *)&clientip;
@@ -497,16 +534,44 @@ again:
 	printf("HTTP connection from %s:%d\n",
 		inet_ntoa(iclientip->sin_addr), ntohs(iclientip->sin_port));
 	while (1) {
-		len = read(client, inbuf, sizeof(inbuf));
-		if (len < 7) {
-			close(client);
-			goto again;
-		}
-		if (strncasecmp(inbuf, "GET ", 4)) {
-			close(client);
-			goto again;
-		}
-		if (!strncmp(inbuf+4, "/v.mjpg ", 8)) {
+        char inbuf[1024];
+        int len = read(client, inbuf, sizeof(inbuf));
+        if (len <= 7) {
+            close(client);
+            goto again;
+        }
+		// if (strncasecmp(inbuf, "GET ", 4)) {
+		// 	close(client);
+		// 	goto again;
+		// }
+        if (!strncmp(inbuf+4, "/exec ", 7)) {
+            char *json_end = strstr(inbuf+7, "\r\n");
+            if (json_end) {
+                *json_end = '\0'; // Null terminate the JSON string
+                sendExecCmd(inbuf+7);
+            } else {
+                fprintf(stderr, "Invalid JSON format\n");
+            }
+    		// Send HTTP status line
+			char status_line[256];
+			sprintf(status_line, "HTTP/1.1 200 OK\r\n");
+			send(client_fd, status_line, strlen(status_line), 0);
+
+			// Send content type header
+			char content_type[256];
+			sprintf(content_type, "Content-Type: application/json\r\n");
+			send(client_fd, content_type, strlen(content_type), 0);
+
+			// Send blank line to indicate end of headers
+			char blank_line[] = "\r\n";
+			send(client_fd, blank_line, strlen(blank_line), 0);
+
+			// Send the response data
+			char response[1024];
+			sprintf(response, "{\"status\": \"OK\"}", 7);
+			send(client_fd, response, strlen(response), 0);
+			close(client_fd);
+		} else if (!strncmp(inbuf+4, "/v.mjpg ", 8)) {
 			if (!connected)
 				connect_camera(&local, &bcast);
 			!write(client, http200b, sizeof(http200b)-1);
